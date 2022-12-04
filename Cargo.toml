@@ -24,3 +24,4 @@ byteorder = "1.4.3"
 [lib]
 name ="dolphin_memory"
 path = "src/lib.rs"
+crate-type = ["cdylib"]

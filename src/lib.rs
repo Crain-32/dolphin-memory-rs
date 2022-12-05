@@ -6,10 +6,9 @@
 use std::ffi;
 use std::io;
 use std::mem;
-use std::num::TryFromIntError;
 use std::ptr;
+use std::convert::TryInto;
 
-use byteorder::{BigEndian, ReadBytesExt};
 use process_memory::{
     CopyAddress, ProcessHandle, ProcessHandleExt, PutAddress, TryIntoProcessHandle,
 };
@@ -26,6 +25,7 @@ pub const MEM1_START: usize = 0x10000000;
 pub const MEM1_END: usize = 0x81800000;
 pub const MEM1_SIZE: usize = 0x2000000;
 pub const MEM2_SIZE: usize = 0x4000000;
+
 
 fn error_chain_fmt(
     e: &impl std::error::Error,
@@ -63,12 +63,14 @@ pub struct Process {
 }
 
 #[derive(Clone, Debug)]
+#[repr(C)]
 pub struct EmuRAMAddresses {
     mem_1: usize,
     mem_2: usize,
 }
 
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct Dolphin {
     handle: ProcessHandle,
     ram: EmuRAMAddresses,
@@ -79,6 +81,58 @@ pub struct Dolphin {
 // This is technically unsafe, but in practice it _shouldn't_ cause
 // issues as we're never changing anything about this pointer.
 unsafe impl Send for Dolphin {}
+
+
+#[no_mangle]
+pub extern "C" fn init(mut instance: Dolphin) {
+    instance = loop {
+        if let Ok(dolphin) = Dolphin::new() {
+            break dolphin;
+        }
+    };
+}
+#[no_mangle]
+pub extern "C" fn hook() {
+    return;
+}
+
+#[no_mangle]
+pub extern "C" fn unhook() {
+    return;
+}
+
+#[no_mangle]
+pub extern "C" fn getStatus() -> u8 {
+    return 0;
+}
+
+#[no_mangle]
+pub extern "C" fn getPID() -> u32 {
+    return 0;
+}
+
+#[no_mangle]
+pub extern "C" fn readFromRAM(instance: Dolphin, consoleAddress: usize, size: usize, buf: *mut u8) {
+    std::env::set_var("RUST_BACKTRACE", "full");
+    unsafe {
+     match instance.read(consoleAddress, size) {
+        Err(why) => panic!("last OS error: {why:?}"),
+        Ok(vector) => {
+                    ptr::copy(vector.as_ptr(),buf, size);
+            }
+        };
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn writeToRAM(instance: Dolphin, consoleAddress: usize, buf: &[u8]) -> bool {
+    match instance.write(buf, consoleAddress) {
+        Err(_why) => return false,
+        Ok(_reason) => return true
+    }
+}
+
+
 
 impl Dolphin {
     // new hooks into the Dolphin process and into the gamecube ram. This can block while looking,
@@ -117,8 +171,7 @@ impl Dolphin {
     // every single time it's run, but in all likelihood the addresses will not
     // change that frequently. It would be a good idea to introduce a cache layer here
     // which caches the output address using a hash of the input address + offsets.
-    #[no_mangle]
-    pub extern "C" fn read(
+    pub fn read(
         &self,
         size: usize,
         starting_address: usize,
@@ -141,268 +194,15 @@ impl Dolphin {
     pub fn write(
         &self,
         buf: &[u8],
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
+        starting_address: usize
     ) -> io::Result<()> {
-        if let Some(offsets) = pointer_offsets {
-            let addr = self.resolve_pointer_address(starting_address, offsets)?;
-            self.handle.put_address(addr, buf)?;
-            
-            return Ok(());
-        }
-        
+
         let starting_address = self.ram.mem_1 + (starting_address & MEM1_STRIP_START);
         self.handle.put_address(starting_address, buf)?;
         
         Ok(())
     }
     
-    // write_u8 wraps write and provides a simple interface for writing a u8 to dolphin memory
-    pub fn write_u8(
-        &self,
-        n: u8,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&[n], starting_address, pointer_offsets)
-    }
-    
-    // write_u16 wraps write and provides a simple interface for writing a u16 to dolphin memory
-    pub fn write_u16(
-        &self,
-        n: u16,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&n.to_be_bytes(), starting_address, pointer_offsets)
-    }
-    
-    // write_u32 wraps write and provides a simple interface for writing a u32 to dolphin memory
-    pub fn write_u32(
-        &self,
-        n: u32,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&n.to_be_bytes(), starting_address, pointer_offsets)
-    }
-    
-    // write_i8 wraps write and provides a simple interface for writing a i8 to dolphin memory
-    pub fn write_i8(
-        &self,
-        n: i8,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&n.to_be_bytes(), starting_address, pointer_offsets)
-    }
-    
-    // write_i16 wraps write and provides a simple interface for writing a i16 to dolphin memory
-    pub fn write_i16(
-        &self,
-        n: i16,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&n.to_be_bytes(), starting_address, pointer_offsets)
-    }
-    
-    // write_i32 wraps write and provides a simple interface for writing a i32 to dolphin memory
-    pub fn write_i32(
-        &self,
-        n: i32,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&n.to_be_bytes(), starting_address, pointer_offsets)
-    }
-    
-    // write_f32 wraps write and provides a simple interface for writing an f32 to dolphin memory
-    pub fn write_f32(
-        &self,
-        f: f32,
-        starting_address: usize,
-        pointer_offsets: Option<&[usize]>,
-    ) -> io::Result<()> {
-        self.write(&f.to_be_bytes(), starting_address, pointer_offsets)
-    }
-    
-    // read_u8 wraps read to provide a convenient cast to an u8.
-    pub fn read_u8(
-        &self,
-        starting_address: usize
-    ) -> io::Result<u8> {
-        let buf = self.read(mem::size_of::<u8>(), starting_address)?;
-        let n = std::io::Cursor::new(buf).read_u8()?;
-        
-        Ok(n)
-    }
-    
-    // read_u16 wraps read to provide a convenient cast to an u16.
-    pub fn read_u16(
-        &self,
-        starting_address: usize,
-    ) -> io::Result<u16> {
-        let buf = self.read(mem::size_of::<u16>(), starting_address)?;
-        let n = std::io::Cursor::new(buf).read_u16::<BigEndian>()?;
-        
-        Ok(n)
-    }
-    
-    // read_u32 wraps read to provide a convenient cast to an u32.
-    pub fn read_u32(
-        &self,
-        starting_address: usize,
-    ) -> io::Result<u32> {
-        let buf = self.read(mem::size_of::<u32>(), starting_address)?;
-        let n = std::io::Cursor::new(buf).read_u32::<BigEndian>()?;
-        
-        Ok(n)
-    }
-    
-    // read_i8 wraps read to provide a convenient cast to an i8.
-    pub fn read_i8(
-        &self,
-        starting_address: usize,
-    ) -> io::Result<i8> {
-        let buf = self.read(mem::size_of::<i8>(), starting_address)?;
-        let n = std::io::Cursor::new(buf).read_i8()?;
-        
-        Ok(n)
-    }
-    
-    // read_i16 wraps read to provide a convenient cast to an i16.
-    pub fn read_i16(
-        &self,
-        starting_address: usize,
-    ) -> io::Result<i16> {
-        let buf = self.read(mem::size_of::<i16>(), starting_address)?;
-        let n = std::io::Cursor::new(buf).read_i16::<BigEndian>()?;
-        
-        Ok(n)
-    }
-    
-    // read_i32 wraps read to provide a convenient cast to an i32.
-    pub fn read_i32(
-        &self,
-        starting_address: usize,
-    ) -> io::Result<i32> {
-        let buf = self.read(mem::size_of::<i32>(), starting_address)?;
-        let n = std::io::Cursor::new(buf).read_i32::<BigEndian>()?;
-        
-        Ok(n)
-    }
-    
-    // read_f32 wraps read to provide a convenient cast to an f32.
-    pub fn read_f32(
-        &self,
-        starting_address: usize,
-    ) -> io::Result<f32> {
-        let buf = self.read(mem::size_of::<f32>(), starting_address)?;
-        let f = std::io::Cursor::new(buf).read_f32::<BigEndian>()?;
-        
-        Ok(f)
-    }
-    
-    // read_string provides a convenient read and cast to a String.
-    // Note that strings are expected to be utf8 and the length will account
-    // for the number of bytes to read.
-    pub fn read_string(
-        &self,
-        length: usize,
-        starting_address: usize,
-    ) -> io::Result<String> {
-        let buf = self.read(length, starting_address)?;
-        let string = String::from_utf8(buf).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        
-        Ok(string)
-    }
-    
-    // resolve_pointer_address follows a series of pointer offsets until
-    // it reachines the last pointer, in which case that address is returned.
-    //
-    // note that it is returned as a fully-qualified address, meaning no memory
-    // offsets are needed.
-    fn resolve_pointer_address(
-        &self,
-        starting_address: usize,
-        offsets: &[usize],
-    ) -> io::Result<usize> {
-        // TODO: this should realistically be able to handle picking mem_1 or mem_2,
-        // but we'll just stick to mem_1 for now.
-        let starting_address = starting_address & MEM1_STRIP_START;
-        
-        // read the starting address to get the initial pointer.
-        // we could have multiple pointer chains to follow, but we know the starting
-        // address is where we want to look first to kick ourselves off on the right foot.
-        let mut ptr_buffer = vec![0_u8; std::mem::size_of::<u32>()];
-        self.handle
-        .copy_address(self.ram.mem_1 + starting_address, &mut ptr_buffer)?;
-        
-        let mut current_ptr: usize = io::Cursor::new(ptr_buffer)
-        .read_u32::<BigEndian>()?
-        .try_into()
-        .map_err(|e: TryFromIntError| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        
-        if current_ptr == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "null pointer address",
-            ));
-        }
-        
-        let mut ptr_addr: usize = 0;
-        for (index, offset) in offsets.iter().enumerate() {
-            // We'll need a new ptr_buffer for each pointer
-            let mut ptr_buffer = vec![0_u8; std::mem::size_of::<u32>()];
-            
-            // Copy and update the current address for each iteration,
-            // as this will be our starting point on subsequent loops.
-            // This also conveniently handles dropping the `8` a the start
-            // of all MEM1 addresses.
-            // TODO: Update this to better handle MEM2.
-            let addr = (current_ptr & MEM1_STRIP_START) + offset;
-            
-            // the last iteration we've likely reached the value we're looking
-            // for, so lets just copy that and break out.
-            if index == offsets.len() - 1 {
-                if current_ptr == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "null pointer address",
-                    ));
-                }
-                
-                ptr_addr = self.ram.mem_1 + addr;
-                break;
-            }
-            
-            self.handle
-            .copy_address(self.ram.mem_1 + addr, &mut ptr_buffer)?;
-            current_ptr = io::Cursor::new(ptr_buffer)
-            .read_u32::<BigEndian>()?
-            .try_into()
-            .map_err(|e: TryFromIntError| {
-                io::Error::new(io::ErrorKind::Other, e.to_string())
-            })?;
-            
-            if current_ptr == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "null pointer address",
-                ));
-            }
-        }
-        
-        if ptr_addr == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "null pointer address",
-            ));
-        }
-        
-        Ok(ptr_addr)
-    }
 }
 
 // get_pid looks up the process id for the given list of process names

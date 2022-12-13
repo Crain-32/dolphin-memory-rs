@@ -3,12 +3,15 @@
 // in this way is implicitly unsafe, but an effort is being made to ensure the API is as safe
 // as it can be for use.
 
+use core::slice;
 use std::ffi;
 use std::io;
 use std::mem;
 use std::ptr;
 use std::convert::TryInto;
+use std::cell::RefCell;
 
+use process_memory::Architecture;
 use process_memory::{
     CopyAddress, ProcessHandle, ProcessHandleExt, PutAddress, TryIntoProcessHandle,
 };
@@ -19,12 +22,15 @@ use winapi::um::winnt;
 
 // MEM1_STRIP_START is  useful for stripping the `8` from the start
 // of memory addresses within the MEM1 region.
-pub const MEM1_STRIP_START: usize = 0x3FFFFFFF;
+pub const MEM1_STRIP_START: usize = 0x7FFF_FFFF;
 
 pub const MEM1_START: usize = 0x10000000;
 pub const MEM1_END: usize = 0x81800000;
 pub const MEM1_SIZE: usize = 0x2000000;
 pub const MEM2_SIZE: usize = 0x4000000;
+
+thread_local!(static DOLPHIN: RefCell<Dolphin>  = RefCell::new(find_dolphin()));
+
 
 
 fn error_chain_fmt(
@@ -62,18 +68,27 @@ pub struct Process {
     handle: winnt::HANDLE,
 }
 
-#[derive(Clone, Debug)]
-#[repr(C)]
+#[derive(Clone, Debug, Default)]
 pub struct EmuRAMAddresses {
     mem_1: usize,
     mem_2: usize,
 }
 
 #[derive(Debug, Clone)]
-#[repr(C)]
 pub struct Dolphin {
     handle: ProcessHandle,
     ram: EmuRAMAddresses,
+}
+
+fn find_dolphin() -> Dolphin {
+    return match Dolphin::new() {
+        Ok(dolphin) => dolphin,
+        Err(_why) => {
+            let handle = (ptr::null_mut(), Architecture::from_native());
+            let ram = EmuRAMAddresses::default();
+            return Dolphin{handle, ram}
+        }
+    }
 }
 
 // this is to allow the std::ffi::c_void pointer of the
@@ -84,51 +99,57 @@ unsafe impl Send for Dolphin {}
 
 
 #[no_mangle]
-pub extern "C" fn init(mut instance: Dolphin) {
-    instance = loop {
-        if let Ok(dolphin) = Dolphin::new() {
-            break dolphin;
-        }
-    };
+pub extern "C" fn init() {
+    DOLPHIN.with(|dolphin| {
+        *dolphin.borrow_mut() = find_dolphin();
+    });
 }
 #[no_mangle]
 pub extern "C" fn hook() {
-    return;
+    DOLPHIN.with(|dolphin| {
+        *dolphin.borrow_mut() = find_dolphin();
+    });
 }
 
 #[no_mangle]
-pub extern "C" fn unhook() {
-    return;
+pub extern "C" fn getStatus() -> bool {
+    return DOLPHIN.with(|dolphin| {
+        return dolphin.borrow().is_emulation_running();
+    });
+}
+
+// This is mostly for validating the Struct using regular Dolphin Memory Engine
+#[no_mangle]
+pub extern "C" fn getMemOne() -> usize {
+    return DOLPHIN.with(|dolphin| {
+        return dolphin.borrow().ram.mem_1;
+    });
 }
 
 #[no_mangle]
-pub extern "C" fn getStatus() -> u8 {
-    return 0;
-}
-
-#[no_mangle]
-pub extern "C" fn getPID() -> u32 {
-    return 0;
-}
-
-#[no_mangle]
-pub extern "C" fn readFromRAM(instance: Dolphin, consoleAddress: usize, size: usize, buf: *mut u8) {
-    std::env::set_var("RUST_BACKTRACE", "full");
+pub extern "C" fn readFromRAM(console_address: usize, size: usize, buf: *mut u8) {
     unsafe {
-     match instance.read(consoleAddress, size) {
-        Err(why) => panic!("last OS error: {why:?}"),
-        Ok(vector) => {
-                    ptr::copy(vector.as_ptr(),buf, size);
-            }
-        };
+        DOLPHIN.with(|dolphin| {
+            match dolphin.borrow().read(size, console_address) {
+                Err(_why) => return,
+                Ok(vector) => {
+                    ptr::copy(vector.as_ptr(), buf, size);
+                }
+            };
+        });
     }
 }
 
 #[no_mangle]
-pub extern "C" fn writeToRAM(instance: Dolphin, consoleAddress: usize, buf: &[u8]) -> bool {
-    match instance.write(buf, consoleAddress) {
-        Err(_why) => return false,
-        Ok(_reason) => return true
+pub extern "C" fn writeToRAM(console_address: usize, size: usize, buf: * const u8) -> bool {
+    unsafe {
+        return DOLPHIN.with(|dolphin| {
+            let slice_buf = slice::from_raw_parts::<u8>(buf, size);
+            match dolphin.borrow().write(slice_buf, console_address) {
+                Err(_why) => return false,
+                Ok(_reason) => return true
+            }
+        });
     }
 }
 
@@ -138,6 +159,7 @@ impl Dolphin {
     // new hooks into the Dolphin process and into the gamecube ram. This can block while looking,
     // but more likely it will error on failure. An easy pattern to check this on repeat is to loop and break
     // on success. You can opt-to do something with the error if you choose, but during hook it's really only basic insights.
+    #[cfg(target_os = "windows")]
     pub fn new() -> Result<Self, ProcessError> {
         let handle = match get_pid(vec!["Dolphin.exe", "DolphinQt1.exe", "DolphinWx.exe"]) {
             Some(h) => h
@@ -180,14 +202,13 @@ impl Dolphin {
         // but we'll just stick to mem_1 for now.
         let starting_address = starting_address & MEM1_STRIP_START;
         let mut buffer = vec![0_u8; size];
-        
         let address = self
         .handle
         .get_offset(&[self.ram.mem_1 + starting_address])?;
         
         self.handle.copy_address(address, &mut buffer)?;
         
-        Ok(buffer)
+        return Ok(buffer);
     }
     
     // write a buffer of bytes to the given address or pointer of address.
@@ -197,7 +218,7 @@ impl Dolphin {
         starting_address: usize
     ) -> io::Result<()> {
 
-        let starting_address = self.ram.mem_1 + (starting_address & MEM1_STRIP_START);
+        let starting_address = self.handle.get_offset(&[(self.ram.mem_1 + (starting_address & MEM1_STRIP_START))])?;
         self.handle.put_address(starting_address, buf)?;
         
         Ok(())
@@ -339,6 +360,8 @@ fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
                 // calling mem::transmute_copy, just to be safe.
                 unsafe {
                     mem1 = Some(mem::transmute_copy(&info.BaseAddress));
+                    let mem_val = mem1.unwrap_or_default();
+                    print!("{mem_val:?}");
                 }
             }
         }

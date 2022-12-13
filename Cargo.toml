@@ -8,6 +8,9 @@ license = "MIT"
 description = "A rust library that makes reading and writing memory of the Dolphin emulator easier."
 repository = "https://github.com/TBPixel/dolphin-memory-rs"
 
+[build-dependencies]
+static_vcruntime = "2.0.0"
+
 [dependencies]
 thiserror = "1.0.30"
 winapi = { version = "0.3.9", features = [

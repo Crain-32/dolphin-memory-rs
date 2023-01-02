@@ -3,13 +3,27 @@
 // in this way is implicitly unsafe, but an effort is being made to ensure the API is as safe
 // as it can be for use.
 
+
+// https://github.com/Tommoa/rs-process-memory
+
 use core::slice;
+use std::borrow::BorrowMut;
 use std::ffi;
+use std::ffi::c_char;
+use std::ffi::CStr;
+use std::ffi::CString;
 use std::io;
 use std::mem;
 use std::ptr;
 use std::convert::TryInto;
-use std::cell::RefCell;
+use std::sync::Mutex;
+use std::sync::Once;
+use std::usize;
+
+use sysinfo::PidExt;
+use sysinfo::ProcessExt;
+use sysinfo::SystemExt;
+use sysinfo::{System, Process, Pid, ProcessRefreshKind};
 
 use process_memory::Architecture;
 use process_memory::{
@@ -29,8 +43,11 @@ pub const MEM1_END: usize = 0x81800000;
 pub const MEM1_SIZE: usize = 0x2000000;
 pub const MEM2_SIZE: usize = 0x4000000;
 
-thread_local!(static DOLPHIN: RefCell<Dolphin>  = RefCell::new(find_dolphin()));
+static mut DOLPHIN: Option<Mutex<Dolphin>> = None;
+static mut SYSTEM: Option<Mutex<System>> = None;
 
+static INIT_DOLPHIN: Once = Once::new();
+static INIT_SYSTEM: Once = Once::new();
 
 
 fn error_chain_fmt(
@@ -62,12 +79,6 @@ impl std::fmt::Debug for ProcessError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Process {
-    pid: u32,
-    handle: winnt::HANDLE,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct EmuRAMAddresses {
     mem_1: usize,
@@ -80,6 +91,24 @@ pub struct Dolphin {
     ram: EmuRAMAddresses,
 }
 
+fn get_dolphin<'a>() -> &'a Mutex<Dolphin> {
+    unsafe {
+        INIT_DOLPHIN.call_once(|| {
+            *DOLPHIN.borrow_mut() = Some(Mutex::new(find_dolphin()));
+        });
+        return DOLPHIN.as_ref().unwrap();
+    }
+}
+
+fn get_system<'b>() -> &'b Mutex<System> {
+    unsafe {
+        INIT_SYSTEM.call_once(|| {
+            *SYSTEM.borrow_mut() = Some(Mutex::new(System::new_all()));
+        });
+        return SYSTEM.as_ref().unwrap();
+    }
+}
+
 fn find_dolphin() -> Dolphin {
     return match Dolphin::new() {
         Ok(dolphin) => dolphin,
@@ -90,7 +119,6 @@ fn find_dolphin() -> Dolphin {
         }
     }
 }
-
 // this is to allow the std::ffi::c_void pointer of the
 // process_memory::ProcessHandle to be passed through threads.
 // This is technically unsafe, but in practice it _shouldn't_ cause
@@ -100,56 +128,48 @@ unsafe impl Send for Dolphin {}
 
 #[no_mangle]
 pub extern "C" fn init() {
-    DOLPHIN.with(|dolphin| {
-        *dolphin.borrow_mut() = find_dolphin();
-    });
+    get_dolphin();
 }
+
 #[no_mangle]
 pub extern "C" fn hook() {
-    DOLPHIN.with(|dolphin| {
-        *dolphin.borrow_mut() = find_dolphin();
-    });
+    let dolphin = get_dolphin().lock().unwrap();
+    if dolphin.is_emulation_running() == false {
+        *get_dolphin().lock().unwrap() = find_dolphin();
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn getStatus() -> bool {
-    return DOLPHIN.with(|dolphin| {
-        return dolphin.borrow().is_emulation_running();
-    });
+    return get_dolphin().lock().unwrap().is_emulation_running();
 }
 
 // This is mostly for validating the Struct using regular Dolphin Memory Engine
 #[no_mangle]
 pub extern "C" fn getMemOne() -> usize {
-    return DOLPHIN.with(|dolphin| {
-        return dolphin.borrow().ram.mem_1;
-    });
+    return get_dolphin().lock().unwrap().ram.mem_1;
 }
 
 #[no_mangle]
 pub extern "C" fn readFromRAM(console_address: usize, size: usize, buf: *mut u8) {
     unsafe {
-        DOLPHIN.with(|dolphin| {
-            match dolphin.borrow().read(size, console_address) {
-                Err(_why) => return,
-                Ok(vector) => {
-                    ptr::copy(vector.as_ptr(), buf, size);
-                }
-            };
-        });
+        match get_dolphin().lock().unwrap().read(size, console_address) {
+            Err(_why) => return,
+            Ok(vector) => {
+                ptr::copy(vector.as_ptr(), buf, size);
+            }
+        };
     }
 }
 
 #[no_mangle]
 pub extern "C" fn writeToRAM(console_address: usize, size: usize, buf: * const u8) -> bool {
     unsafe {
-        return DOLPHIN.with(|dolphin| {
-            let slice_buf = slice::from_raw_parts::<u8>(buf, size);
-            match dolphin.borrow().write(slice_buf, console_address) {
-                Err(_why) => return false,
-                Ok(_reason) => return true
-            }
-        });
+        let slice_buf = slice::from_raw_parts::<u8>(buf, size);
+        match get_dolphin().lock().unwrap().write(slice_buf, console_address) {
+            Err(_why) => return false,
+            Ok(_reason) => return true
+        }
     }
 }
 
@@ -169,6 +189,22 @@ impl Dolphin {
         };
         
         let ram = ram_info(handle)?;
+        let handle = handle.set_arch(process_memory::Architecture::Arch32Bit);
+        
+        Ok(Dolphin { handle, ram})
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn new() -> Result<Self, ProcessError> {
+        let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
+        let handle = match get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]) {
+            Some(h) => h
+            .try_into_process_handle()
+            .map_err(|e| ProcessError::UnknownError(e))?,
+            None => return Err(ProcessError::DolphinNotFound),
+        };
+        
+        let ram = ram_info(app_pid)?;
         let handle = handle.set_arch(process_memory::Architecture::Arch32Bit);
         
         Ok(Dolphin { handle, ram })
@@ -227,50 +263,106 @@ impl Dolphin {
 }
 
 // get_pid looks up the process id for the given list of process names
+
 fn get_pid(process_names: Vec<&str>) -> Option<process_memory::Pid> {
-    fn utf8_to_string(bytes: &[i8]) -> String {
-        use std::ffi::CStr;
-        unsafe {
-            CStr::from_ptr(bytes.as_ptr())
-            .to_string_lossy()
-            .into_owned()
+    get_system().lock().unwrap().refresh_processes_specifics(ProcessRefreshKind::everything().without_cpu());
+    for (_p_pid, p_proc) in get_system().lock().unwrap().processes() {
+        if process_names.contains(&p_proc.name()) {
+            return Some(p_proc.pid().as_u32())
         }
     }
-    
-    let mut entry = winapi::um::tlhelp32::PROCESSENTRY32 {
-        dwSize: std::mem::size_of::<winapi::um::tlhelp32::PROCESSENTRY32>() as u32,
-        szExeFile: [0; winapi::shared::minwindef::MAX_PATH],
-        cntUsage: 0,
-        th32ProcessID: 0,
-        th32DefaultHeapID: 0,
-        th32ModuleID: 0,
-        cntThreads: 0,
-        th32ParentProcessID: 0,
-        pcPriClassBase: 0,
-        dwFlags: 0,
-    };
-    
-    let snapshot: winapi::um::winnt::HANDLE;
-    snapshot = unsafe {
-        winapi::um::tlhelp32::CreateToolhelp32Snapshot(winapi::um::tlhelp32::TH32CS_SNAPPROCESS, 0)
-    };
-    
-    if unsafe { winapi::um::tlhelp32::Process32First(snapshot, &mut entry) }
-    == winapi::shared::minwindef::TRUE
-    {
-        while unsafe { winapi::um::tlhelp32::Process32Next(snapshot, &mut entry) }
-        == winapi::shared::minwindef::TRUE
-        {
-            if process_names.contains(&utf8_to_string(&entry.szExeFile).as_str()) {
-                return Some(entry.th32ProcessID);
+    None
+} 
+
+#[cfg(target_os = "linux")]
+fn ram_info(pid: Pid) -> Result<EmuRAMAddresses, ProcessError> {
+    use std::fs::File;
+    use std::io::prelude::*;
+    use std::path::Path;
+    use std::io::{self, BufRead};
+
+        // Open the path in read-only mode, returns `io::Result<File>`
+    fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
+        where P: AsRef<Path>, {
+        let file = File::open(filename)?;
+        Ok(io::BufReader::new(file).lines())
+    }
+
+    let mut mem1: Option<usize> = None;
+    let mut mem2: Option<usize> = None;
+
+    if let Ok(lines) = read_lines("/proc/{pid:?}/maps") {
+        // Consumes the iterator, returns an (Optional) String
+        for line in lines {
+            let mut line_data: Vec<String> = Vec::new();
+            if let Ok(info) = line {
+                for split_info in info.split(' ') {
+                    if split_info.len() > 0 {
+                        line_data.push(split_info.to_string());
+                    }
+                }
+            }
+            if line_data.len() < 3 {
+                continue;
+            }
+
+            let found_dev_shm = false;
+            for data in line_data {
+                if data.starts_with("/dev/shm/dolphinmem") || data.starts_with("/dev/shm/dolphin-emu") {
+                    found_dev_shm = true;
+                    break;
+                }
+            }
+            if !found_dev_shm {
+                continue;
+            }
+            let offset_str: String = "0x".to_string() + &line_data.get(2).unwrap().to_string();
+            let offset_result = u32::from_str_radix(&offset_str, 16);
+            let offset: u32 = 1;
+            match offset_result {
+                Ok(result) => offset = result,
+                Err(_result) => continue
+            }
+            if offset != 0 && offset != 0x2040000 {
+                continue;
+            }
+            let first_address: usize = 0;
+            let second_address: usize = 0;
+            let index_dash = line_data.get(0).unwrap().find('-').unwrap();
+            let first_address_str = "0x".to_string() + &line_data.get(0).unwrap().to_string()[..index_dash];
+            let second_address_str = "0x".to_string() + &line_data.get(0).unwrap().to_string()[index_dash + 1..];
+
+            let first_address_result = usize::from_str_radix(&first_address_str, 16);
+            let second_address_result = usize::from_str_radix(&second_address_str, 16);
+            if first_address_result.is_ok() {
+                first_address = first_address_result.unwrap();
+            }
+            if second_address_result.is_ok() {
+                second_address = second_address_result.unwrap();
+            }
+            if (second_address - first_address == 0x4000000) && offset == 0x2040000 {
+                mem2 = Some(first_address);
+                if mem1.is_some() {
+                    break;
+                }
+            }
+            if (second_address - first_address == 0x2000000) && offset == 0x0 {
+                mem1 = Some(first_address);
             }
         }
     }
+    if mem1.is_none() {
+        return Err(ProcessError::EmulationNotRunning);
+    }
     
-    None
+    Ok(EmuRAMAddresses {
+        mem_1: mem1.unwrap_or_default(),
+        mem_2: mem2.unwrap_or_default(),
+    })
 }
 
 // ram_info is a convenient function wrapper for querying the emulated GC heap addresses.
+#[cfg(target_os = "windows")]
 fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
     let mut mem1: Option<usize> = None;
     let mut mem2: Option<usize> = None;
@@ -382,4 +474,14 @@ fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
         mem_1: mem1.unwrap_or_default(),
         mem_2: mem2.unwrap_or_default(),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
+    None
 }

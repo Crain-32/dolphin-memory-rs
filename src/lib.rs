@@ -30,9 +30,6 @@ use process_memory::{
     CopyAddress, ProcessHandle, ProcessHandleExt, PutAddress, TryIntoProcessHandle,
 };
 use thiserror::Error;
-use winapi::um::memoryapi;
-use winapi::um::psapi;
-use winapi::um::winnt;
 
 // MEM1_STRIP_START is  useful for stripping the `8` from the start
 // of memory addresses within the MEM1 region.
@@ -364,6 +361,10 @@ fn ram_info(pid: Pid) -> Result<EmuRAMAddresses, ProcessError> {
 // ram_info is a convenient function wrapper for querying the emulated GC heap addresses.
 #[cfg(target_os = "windows")]
 fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
+    use winapi::um::memoryapi;
+    use winapi::um::psapi;
+    use winapi::um::winnt;
+    
     let mut mem1: Option<usize> = None;
     let mut mem2: Option<usize> = None;
     
@@ -474,11 +475,6 @@ fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
         mem_1: mem1.unwrap_or_default(),
         mem_2: mem2.unwrap_or_default(),
     })
-}
-
-#[cfg(target_os = "linux")]
-fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
-    None
 }
 
 #[cfg(target_os = "macos")]

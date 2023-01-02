@@ -322,8 +322,8 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
                 continue;
             }
 
-            let found_dev_shm = false;
-            for data in line_data {
+            let mut found_dev_shm = false;
+            for data in &line_data {
                 if data.starts_with("/dev/shm/dolphinmem") || data.starts_with("/dev/shm/dolphin-emu") {
                     found_dev_shm = true;
                     break;
@@ -334,7 +334,7 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
             }
             let offset_str: String = "0x".to_string() + &line_data.get(2).unwrap().to_string();
             let offset_result = u32::from_str_radix(&offset_str, 16);
-            let offset: u32 = 1;
+            let mut offset: u32 = 1;
             match offset_result {
                 Ok(result) => offset = result,
                 Err(_result) => continue
@@ -342,8 +342,8 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
             if offset != 0 && offset != 0x2040000 {
                 continue;
             }
-            let first_address: usize = 0;
-            let second_address: usize = 0;
+            let mut first_address: usize = 0;
+            let mut second_address: usize = 0;
             let index_dash = line_data.get(0).unwrap().find('-').unwrap();
             let first_address_str = "0x".to_string() + &line_data.get(0).unwrap().to_string()[..index_dash];
             let second_address_str = "0x".to_string() + &line_data.get(0).unwrap().to_string()[index_dash + 1..];

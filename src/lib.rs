@@ -200,14 +200,16 @@ impl Dolphin {
             .map_err(|e| ProcessError::UnknownError(e))?,
             None => return Err(ProcessError::DolphinNotFound),
         };
-        
-        let ram = ram_info(app_pid)?;
+        if app_pid.is_ok() {
+            let ram = ram_info(app_pid.unwrap())?;
+        }
         let handle = handle.set_arch(process_memory::Architecture::Arch32Bit);
         
         Ok(Dolphin { handle, ram })
     }
     
     // is_emulation_running queries ram info to determine if the emulator is still running.
+    #[cfg(target_os = "windows")]
     pub fn is_emulation_running(&self) -> bool {
         match ram_info(self.handle) {
             Ok(_) => true,
@@ -215,6 +217,18 @@ impl Dolphin {
         }
     }
     
+    #[cfg(target_os = "linux")]
+    pub fn is_emulation_running(&self) -> bool {
+        let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
+        if app_pid.is_ok() {
+            return match ram_info(app_pid.unwrap()) {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        }
+        return false;
+    }
+
     // read takes a size, starting address and an optional list of pointer offsets,
     // following those addresses until it hits the underyling data.
     //
@@ -261,11 +275,15 @@ impl Dolphin {
 
 // get_pid looks up the process id for the given list of process names
 
+
 fn get_pid(process_names: Vec<&str>) -> Option<process_memory::Pid> {
     get_system().lock().unwrap().refresh_processes_specifics(ProcessRefreshKind::everything().without_cpu());
     for (_p_pid, p_proc) in get_system().lock().unwrap().processes() {
         if process_names.contains(&p_proc.name()) {
-            return Some(p_proc.pid().as_u32())
+            #[cfg(target_os = "windows")]
+            return Some(p_proc.pid().as_u32());
+            #[cfg(target_os = "linux")]
+            return Some(p_proc.pid().as_u32() as i32);
         }
     }
     None
@@ -364,7 +382,7 @@ fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
     use winapi::um::memoryapi;
     use winapi::um::psapi;
     use winapi::um::winnt;
-    
+
     let mut mem1: Option<usize> = None;
     let mut mem2: Option<usize> = None;
     

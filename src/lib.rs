@@ -110,12 +110,12 @@ fn find_dolphin() -> Dolphin {
     return match Dolphin::new() {
         Ok(dolphin) => dolphin,
         Err(_why) => {
-            let handle = (ptr::null_mut(), Architecture::from_native());
-            let ram = EmuRAMAddresses::default();
-            return Dolphin{handle, ram}
+            return Dolphin{handle: ProcessHandle::null_type(), ram: EmuRAMAddresses::default()}
         }
     }
 }
+
+
 // this is to allow the std::ffi::c_void pointer of the
 // process_memory::ProcessHandle to be passed through threads.
 // This is technically unsafe, but in practice it _shouldn't_ cause
@@ -200,8 +200,9 @@ impl Dolphin {
             .map_err(|e| ProcessError::UnknownError(e))?,
             None => return Err(ProcessError::DolphinNotFound),
         };
-        if app_pid.is_ok() {
-            let ram = ram_info(app_pid.unwrap())?;
+        let ram: EmuRAMAddresses = EmuRAMAddresses { mem_1: 0, mem_2: 0 };
+        if app_pid.is_some() {
+            let ram = ram_info(app_pid.unwrap_or(0))?;
         }
         let handle = handle.set_arch(process_memory::Architecture::Arch32Bit);
         
@@ -220,8 +221,8 @@ impl Dolphin {
     #[cfg(target_os = "linux")]
     pub fn is_emulation_running(&self) -> bool {
         let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
-        if app_pid.is_ok() {
-            return match ram_info(app_pid.unwrap()) {
+        if app_pid.is_some() {
+            return match ram_info(app_pid.unwrap_or(0)) {
                 Ok(_) => true,
                 Err(_) => false,
             }
@@ -290,7 +291,7 @@ fn get_pid(process_names: Vec<&str>) -> Option<process_memory::Pid> {
 } 
 
 #[cfg(target_os = "linux")]
-fn ram_info(pid: Pid) -> Result<EmuRAMAddresses, ProcessError> {
+fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::Path;

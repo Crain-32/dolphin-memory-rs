@@ -143,7 +143,7 @@ pub extern "C" fn check_ram_info() -> usize {
     let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
     let ram: EmuRAMAddresses = EmuRAMAddresses { mem_1: 0, mem_2: 0 };
     if app_pid.is_some() {
-        let ram = ram_info(app_pid.unwrap_or(0))?;
+        let ram = ram_info(app_pid.unwrap_or(0)).unwrap();
     }
     return ram.mem_1;
 }

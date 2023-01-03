@@ -129,6 +129,32 @@ pub extern "C" fn init() {
 }
 
 #[no_mangle]
+pub extern "C" fn find_pid() -> process_memory::Pid {
+    let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
+    if app_pid.is_none() {
+        return 0
+    }
+    return app_pid.unwrap();
+}
+
+#[no_mangle]
+#[cfg(target_os = "linux")]
+pub extern "C" fn check_ram_info() -> usize {
+    let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
+    let handle = match get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]) {
+        Some(h) => h
+        .try_into_process_handle()
+        .map_err(|e| ProcessError::UnknownError(e))?,
+        None =>  return Err(ProcessError::DolphinNotFound),
+    };
+    let ram: EmuRAMAddresses = EmuRAMAddresses { mem_1: 0, mem_2: 0 };
+    if app_pid.is_some() {
+        let ram = ram_info(app_pid.unwrap_or(0))?;
+    }
+    return ram.mem_1;
+}
+
+#[no_mangle]
 pub extern "C" fn hook() {
     let dolphin = get_dolphin().lock().unwrap();
     if dolphin.is_emulation_running() == false {

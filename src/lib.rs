@@ -307,7 +307,7 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
     let mut mem1: Option<usize> = None;
     let mut mem2: Option<usize> = None;
 
-    if let Ok(lines) = read_lines("/proc/{pid:?}/maps") {
+    if let Ok(lines) = read_lines(format!("/proc/{}/maps", pid)) {
         // Consumes the iterator, returns an (Optional) String
         for line in lines {
             let mut line_data: Vec<String> = Vec::new();

@@ -129,8 +129,19 @@ pub extern "C" fn init() {
 }
 
 #[no_mangle]
+#[cfg(target_os = "linux")]
 pub extern "C" fn find_pid() -> process_memory::Pid {
     let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
+    if app_pid.is_none() {
+        return 0
+    }
+    return app_pid.unwrap();
+}
+
+#[no_mangle]
+#[cfg(target_os = "windows")]
+pub extern "C" fn find_pid() -> process_memory::Pid {
+    let app_pid = get_pid(vec!["Dolphin.exe", "DolphinQt1.exe", "DolphinWx.exe"]);
     if app_pid.is_none() {
         return 0
     }
@@ -168,6 +179,54 @@ pub extern "C" fn getMemOne() -> usize {
 }
 
 #[no_mangle]
+pub extern "C" fn check_string(java_str: * const c_char) -> bool {
+    unsafe {
+        let c_str : &CStr = unsafe {
+        assert!(!java_str.is_null());
+
+        CStr::from_ptr(java_str)
+        };
+        let rust_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
+        return rust_str == "Dolphin.exe";
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn check_pid_from_str(java_str: * const c_char, output: * mut c_char) {
+        unsafe {
+        let c_str : &CStr = unsafe {
+        assert!(!java_str.is_null());
+
+        CStr::from_ptr(java_str)
+        };
+        let rust_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
+        let mut pid_str: Vec<&str> = Vec::new();
+        pid_str.push(rust_str);
+        let result = match get_pid(pid_str) {
+            Some(pid_result) => pid_result.to_string(),
+            None => "failure".to_string(),
+        };
+        let c_string: CString = CString::new(result.as_str()).unwrap();
+        let c_str: &CStr = c_string.as_c_str();
+        ptr::copy(c_str.as_ptr(), output, result.len());
+    }
+}
+
+#[no_mangle]
+pub extern fn printc(s: *const c_char){
+    let c_str : &CStr = unsafe {
+        assert!(!s.is_null());
+
+        CStr::from_ptr(s)
+    };
+
+    println!("{:?}", c_str.to_bytes().len()); //prints "1" if unicode
+
+    let r_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
+    println!("{:?}", r_str);
+}
+
+#[no_mangle]
 pub extern "C" fn readFromRAM(console_address: usize, size: usize, buf: *mut u8) {
     unsafe {
         match get_dolphin().lock().unwrap().read(size, console_address) {
@@ -196,7 +255,7 @@ impl Dolphin {
     // new hooks into the Dolphin process and into the gamecube ram. This can block while looking,
     // but more likely it will error on failure. An easy pattern to check this on repeat is to loop and break
     // on success. You can opt-to do something with the error if you choose, but during hook it's really only basic insights.
-    #[cfg(target_os = "windows")]
+    // #[cfg(target_os = "windows")]
     pub fn new() -> Result<Self, ProcessError> {
         let handle = match get_pid(vec!["Dolphin.exe", "DolphinQt1.exe", "DolphinWx.exe"]) {
             Some(h) => h
@@ -230,7 +289,7 @@ impl Dolphin {
     }
     
     // is_emulation_running queries ram info to determine if the emulator is still running.
-    #[cfg(target_os = "windows")]
+    // #[cfg(target_os = "windows")]
     pub fn is_emulation_running(&self) -> bool {
         match ram_info(self.handle) {
             Ok(_) => true,
@@ -301,7 +360,7 @@ fn get_pid(process_names: Vec<&str>) -> Option<process_memory::Pid> {
     get_system().lock().unwrap().refresh_processes_specifics(ProcessRefreshKind::everything().without_cpu());
     for (_p_pid, p_proc) in get_system().lock().unwrap().processes() {
         if process_names.contains(&p_proc.name()) {
-            #[cfg(target_os = "windows")]
+            // #[cfg(target_os = "windows")]
             return Some(p_proc.pid().as_u32());
             #[cfg(target_os = "linux")]
             return Some(p_proc.pid().as_u32() as i32);
@@ -398,7 +457,7 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
 }
 
 // ram_info is a convenient function wrapper for querying the emulated GC heap addresses.
-#[cfg(target_os = "windows")]
+// #[cfg(target_os = "windows")]
 fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
     use winapi::um::memoryapi;
     use winapi::um::psapi;

@@ -351,7 +351,7 @@ fn get_pid(process_names: Vec<&str>) -> Option<process_memory::Pid> {
     get_system().lock().unwrap().refresh_processes_specifics(ProcessRefreshKind::everything().without_cpu());
     for (_p_pid, p_proc) in get_system().lock().unwrap().processes() {
         if process_names.contains(&p_proc.name()) {
-            // #[cfg(target_os = "windows")]
+            #[cfg(target_os = "windows")]
             return Some(p_proc.pid().as_u32());
             #[cfg(target_os = "linux")]
             return Some(p_proc.pid().as_u32() as i32);

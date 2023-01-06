@@ -23,7 +23,7 @@ use std::usize;
 use sysinfo::PidExt;
 use sysinfo::ProcessExt;
 use sysinfo::SystemExt;
-use sysinfo::{System, Process, Pid, ProcessRefreshKind};
+use sysinfo::{System, Process, ProcessRefreshKind};
 
 use process_memory::Architecture;
 use process_memory::{
@@ -159,6 +159,7 @@ pub extern "C" fn check_ram_info() -> usize {
     return ram.mem_1;
 }
 
+
 #[no_mangle]
 pub extern "C" fn hook() {
     let dolphin = get_dolphin().lock().unwrap();
@@ -178,6 +179,7 @@ pub extern "C" fn getMemOne() -> usize {
     return get_dolphin().lock().unwrap().ram.mem_1;
 }
 
+// Used for testing what string can find Processes on Mac.
 #[no_mangle]
 pub extern "C" fn check_string(java_str: * const c_char) -> bool {
     unsafe {
@@ -212,19 +214,6 @@ pub extern "C" fn check_pid_from_str(java_str: * const c_char, output: * mut c_c
     }
 }
 
-#[no_mangle]
-pub extern fn printc(s: *const c_char){
-    let c_str : &CStr = unsafe {
-        assert!(!s.is_null());
-
-        CStr::from_ptr(s)
-    };
-
-    println!("{:?}", c_str.to_bytes().len()); //prints "1" if unicode
-
-    let r_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
-    println!("{:?}", r_str);
-}
 
 #[no_mangle]
 pub extern "C" fn readFromRAM(console_address: usize, size: usize, buf: *mut u8) {
@@ -255,7 +244,7 @@ impl Dolphin {
     // new hooks into the Dolphin process and into the gamecube ram. This can block while looking,
     // but more likely it will error on failure. An easy pattern to check this on repeat is to loop and break
     // on success. You can opt-to do something with the error if you choose, but during hook it's really only basic insights.
-    // #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
     pub fn new() -> Result<Self, ProcessError> {
         let handle = match get_pid(vec!["Dolphin.exe", "DolphinQt1.exe", "DolphinWx.exe"]) {
             Some(h) => h
@@ -287,9 +276,11 @@ impl Dolphin {
         
         Ok(Dolphin { handle, ram })
     }
+
+    // #[cfg(target_os = "mac_os")]
     
     // is_emulation_running queries ram info to determine if the emulator is still running.
-    // #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
     pub fn is_emulation_running(&self) -> bool {
         match ram_info(self.handle) {
             Ok(_) => true,
@@ -411,12 +402,12 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
             if !found_dev_shm {
                 continue;
             }
-            let offset_str: String = "0x".to_string() + &line_data.get(2).unwrap().to_string();
+            let offset_str: String = line_data.get(2).unwrap().to_string();
             let offset_result = u32::from_str_radix(&offset_str, 16);
-            let mut offset: u32 = 1;
+            let offset: u32;
             match offset_result {
                 Ok(result) => offset = result,
-                Err(_result) => continue
+                Err(_err) => continue
             }
             if offset != 0 && offset != 0x2040000 {
                 continue;
@@ -424,8 +415,8 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
             let mut first_address: usize = 0;
             let mut second_address: usize = 0;
             let index_dash = line_data.get(0).unwrap().find('-').unwrap();
-            let first_address_str = "0x".to_string() + &line_data.get(0).unwrap().to_string()[..index_dash];
-            let second_address_str = "0x".to_string() + &line_data.get(0).unwrap().to_string()[index_dash + 1..];
+            let first_address_str = &line_data.get(0).unwrap().to_string()[..index_dash];
+            let second_address_str = &line_data.get(0).unwrap().to_string()[index_dash + 1..];
 
             let first_address_result = usize::from_str_radix(&first_address_str, 16);
             let second_address_result = usize::from_str_radix(&second_address_str, 16);
@@ -444,8 +435,8 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
             if (second_address - first_address == 0x2000000) && offset == 0x0 {
                 mem1 = Some(first_address);
             }
-        }
-    }
+        } // End of for line in Line
+    } // End of Proc File Management
     if mem1.is_none() {
         return Err(ProcessError::EmulationNotRunning);
     }
@@ -457,7 +448,7 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
 }
 
 // ram_info is a convenient function wrapper for querying the emulated GC heap addresses.
-// #[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
 fn ram_info(process: ProcessHandle) -> Result<EmuRAMAddresses, ProcessError> {
     use winapi::um::memoryapi;
     use winapi::um::psapi;

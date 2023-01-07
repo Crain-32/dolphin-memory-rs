@@ -82,6 +82,8 @@ pub struct EmuRAMAddresses {
     mem_2: usize,
 }
 
+
+
 #[derive(Debug, Clone)]
 pub struct Dolphin {
     handle: ProcessHandle,
@@ -148,17 +150,6 @@ pub extern "C" fn find_pid() -> process_memory::Pid {
     return app_pid.unwrap();
 }
 
-#[no_mangle]
-#[cfg(target_os = "linux")]
-pub extern "C" fn check_ram_info() -> usize {
-    let app_pid = get_pid(vec!["dolphin-emu", "dolphin-emu-qt2", "dolphin-emu-wx"]);
-    let ram: EmuRAMAddresses = EmuRAMAddresses { mem_1: 0, mem_2: 0 };
-    if app_pid.is_some() {
-        let ram = ram_info(app_pid.unwrap_or(0)).unwrap();
-    }
-    return ram.mem_1;
-}
-
 
 #[no_mangle]
 pub extern "C" fn hook() {
@@ -180,39 +171,39 @@ pub extern "C" fn getMemOne() -> usize {
 }
 
 // Used for testing what string can find Processes on Mac.
-#[no_mangle]
-pub extern "C" fn check_string(java_str: * const c_char) -> bool {
-    unsafe {
-        let c_str : &CStr = unsafe {
-        assert!(!java_str.is_null());
+// #[no_mangle]
+// pub extern "C" fn check_string(java_str: * const c_char) -> bool {
+//     unsafe {
+//         let c_str : &CStr = unsafe {
+//         assert!(!java_str.is_null());
 
-        CStr::from_ptr(java_str)
-        };
-        let rust_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
-        return rust_str == "Dolphin.exe";
-    }
-}
+//         CStr::from_ptr(java_str)
+//         };
+//         let rust_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
+//         return rust_str == "Dolphin.exe";
+//     }
+// }
 
-#[no_mangle]
-pub extern "C" fn check_pid_from_str(java_str: * const c_char, output: * mut c_char) {
-        unsafe {
-        let c_str : &CStr = unsafe {
-        assert!(!java_str.is_null());
+// #[no_mangle]
+// pub extern "C" fn check_pid_from_str(java_str: * const c_char, output: * mut c_char) {
+//         unsafe {
+//         let c_str : &CStr = unsafe {
+//         assert!(!java_str.is_null());
 
-        CStr::from_ptr(java_str)
-        };
-        let rust_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
-        let mut pid_str: Vec<&str> = Vec::new();
-        pid_str.push(rust_str);
-        let result = match get_pid(pid_str) {
-            Some(pid_result) => pid_result.to_string(),
-            None => "failure".to_string(),
-        };
-        let c_string: CString = CString::new(result.as_str()).unwrap();
-        let c_str: &CStr = c_string.as_c_str();
-        ptr::copy(c_str.as_ptr(), output, result.len());
-    }
-}
+//         CStr::from_ptr(java_str)
+//         };
+//         let rust_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
+//         let mut pid_str: Vec<&str> = Vec::new();
+//         pid_str.push(rust_str);
+//         let result = match get_pid(pid_str) {
+//             Some(pid_result) => pid_result.to_string(),
+//             None => "failure".to_string(),
+//         };
+//         let c_string: CString = CString::new(result.as_str()).unwrap();
+//         let c_str: &CStr = c_string.as_c_str();
+//         ptr::copy(c_str.as_ptr(), output, result.len());
+//     }
+// }
 
 
 #[no_mangle]
@@ -395,6 +386,7 @@ fn ram_info(pid: process_memory::Pid) -> Result<EmuRAMAddresses, ProcessError> {
             let mut found_dev_shm = false;
             for data in &line_data {
                 if data.starts_with("/dev/shm/dolphinmem") || data.starts_with("/dev/shm/dolphin-emu") {
+                    panic!("Found shm!");
                     found_dev_shm = true;
                     break;
                 }
